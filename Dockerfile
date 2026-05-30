@@ -17,7 +17,9 @@ RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoload
 
 COPY . .
 
-RUN composer dump-autoload --optimize \
+RUN mkdir -p storage/app storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache \
+    && composer dump-autoload --optimize --no-scripts \
     && php artisan package:discover --ansi \
     && chmod -R 775 storage bootstrap/cache
 
