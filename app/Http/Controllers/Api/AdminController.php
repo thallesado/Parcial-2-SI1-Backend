@@ -565,18 +565,73 @@ class AdminController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    // MODULO POSTULANTES - lista postulantes con carreras elegidas y grupo asignado.
-    public function postulantes(): JsonResponse
+    // MODULO POSTULANTES - lista postulantes paginados con carreras elegidas y grupo asignado.
+    public function postulantes(Request $request): JsonResponse
     {
-        return response()->json(
-            DB::table('admision.v_postulantes_general as p')
-                ->leftJoin('admision.grupo_postulante as gp', 'gp.postulante_id', '=', 'p.postulante_id')
-                ->leftJoin('admision.grupo as g', 'g.grupo_id', '=', 'gp.grupo_id')
-                ->select('p.*', 'g.grupo_id', 'g.codigo as grupo_asignado')
-                ->orderByDesc('p.fecha_registro')
-                ->limit(200)
-                ->get()
-        );
+        $perPage = min(max((int) $request->integer('per_page', 20), 10), 100);
+        $search = trim((string) $request->query('search', ''));
+        $estado = $request->query('estado');
+        $gestionId = $request->query('gestion_id');
+        $carreraId = $request->query('carrera_id');
+
+        $query = DB::table('admision.postulante as p')
+            ->join('admision.gestion_academica as ga', 'ga.gestion_id', '=', 'p.gestion_id')
+            ->leftJoin('admision.postulante_carrera_opcion as pco1', function ($join) {
+                $join->on('pco1.postulante_id', '=', 'p.postulante_id')
+                    ->where('pco1.orden', 1);
+            })
+            ->leftJoin('admision.carrera as c1', 'c1.carrera_id', '=', 'pco1.carrera_id')
+            ->leftJoin('admision.postulante_carrera_opcion as pco2', function ($join) {
+                $join->on('pco2.postulante_id', '=', 'p.postulante_id')
+                    ->where('pco2.orden', 2);
+            })
+            ->leftJoin('admision.carrera as c2', 'c2.carrera_id', '=', 'pco2.carrera_id')
+            ->leftJoin('admision.grupo_postulante as gp', 'gp.postulante_id', '=', 'p.postulante_id')
+            ->leftJoin('admision.grupo as g', 'g.grupo_id', '=', 'gp.grupo_id')
+            ->when($search !== '', function ($query) use ($search) {
+                $like = "%{$search}%";
+
+                $query->where(function ($inner) use ($like) {
+                    $inner->where('p.ci', 'ILIKE', $like)
+                        ->orWhere('p.nombres', 'ILIKE', $like)
+                        ->orWhere('p.apellidos', 'ILIKE', $like)
+                        ->orWhere('p.correo', 'ILIKE', $like);
+                });
+            })
+            ->when($estado, fn ($query) => $query->where('p.estado', $estado))
+            ->when($gestionId, fn ($query) => $query->where('p.gestion_id', $gestionId))
+            ->when($carreraId, function ($query) use ($carreraId) {
+                $query->where(function ($inner) use ($carreraId) {
+                    $inner->where('pco1.carrera_id', $carreraId)
+                        ->orWhere('pco2.carrera_id', $carreraId);
+                });
+            })
+            ->select(
+                'p.postulante_id',
+                'p.gestion_id',
+                'ga.nombre as gestion',
+                'p.ci',
+                'p.nombres',
+                'p.apellidos',
+                'p.fecha_nacimiento',
+                'p.sexo',
+                'p.direccion',
+                'p.telefono',
+                'p.correo',
+                'p.colegio_procedencia',
+                'p.ciudad',
+                'p.titulo_bachiller_codigo',
+                'c1.nombre as carrera_opcion_1',
+                'c2.nombre as carrera_opcion_2',
+                'p.estado',
+                'p.fecha_registro',
+                'g.grupo_id',
+                'g.codigo as grupo_asignado'
+            )
+            ->orderByDesc('p.fecha_registro')
+            ->orderByDesc('p.postulante_id');
+
+        return response()->json($query->paginate($perPage));
     }
 
     // MODULO BITACORA - entrega ultimos movimientos del administrador.
@@ -715,32 +770,52 @@ class AdminController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    // MODULO EXAMENES - lista postulantes con promedios para selector lateral.
-    public function postulantesExamenes(): JsonResponse
+    // MODULO EXAMENES - lista postulantes paginados para selector lateral.
+    // Usa resultado_admision ya procesado para evitar recalcular promedios en cada listado.
+    public function postulantesExamenes(Request $request): JsonResponse
     {
-        return response()->json(
-            DB::table('admision.v_promedios_postulante as vp')
-                ->join('admision.postulante as p', 'p.postulante_id', '=', 'vp.postulante_id')
-                ->leftJoin('admision.resultado_admision as ra', 'ra.postulante_id', '=', 'vp.postulante_id')
-                ->leftJoin('admision.carrera as c', 'c.carrera_id', '=', 'ra.carrera_admitida_id')
-                ->select(
-                    'vp.postulante_id',
-                    'vp.gestion_id',
-                    'vp.ci',
-                    'vp.nombres',
-                    'vp.apellidos',
-                    'p.sexo',
-                    'vp.promedio_final',
-                    'vp.promedio_desempate',
-                    'vp.estado_academico_calculado',
-                    'ra.estado_academico',
-                    'ra.estado_admision',
-                    DB::raw('c.nombre as carrera_admitida')
-                )
-                ->orderBy('vp.apellidos')
-                ->orderBy('vp.nombres')
-                ->get()
-        );
+        $perPage = min(max((int) $request->integer('per_page', 50), 10), 100);
+        $search = trim((string) $request->query('search', ''));
+        $gestionId = $request->query('gestion_id');
+        $sexo = $request->query('sexo');
+        $estado = $request->query('estado');
+
+        $query = DB::table('admision.postulante as p')
+            ->leftJoin('admision.resultado_admision as ra', 'ra.postulante_id', '=', 'p.postulante_id')
+            ->leftJoin('admision.carrera as c', 'c.carrera_id', '=', 'ra.carrera_admitida_id')
+            ->when($search !== '', function ($query) use ($search) {
+                $like = "%{$search}%";
+
+                $query->where(function ($inner) use ($like) {
+                    $inner->where('p.ci', 'ILIKE', $like)
+                        ->orWhere('p.nombres', 'ILIKE', $like)
+                        ->orWhere('p.apellidos', 'ILIKE', $like);
+                });
+            })
+            ->when($gestionId, fn ($query) => $query->where('p.gestion_id', $gestionId))
+            ->when($sexo, fn ($query) => $query->where('p.sexo', $sexo))
+            ->when($estado === 'ADMITIDO', fn ($query) => $query->where('ra.estado_admision', 'ADMITIDO'))
+            ->when($estado === 'SIN_CUPO', fn ($query) => $query->where('ra.estado_admision', 'SIN_CUPO'))
+            ->when($estado === 'REPROBADO', fn ($query) => $query->where('ra.estado_academico', 'REPROBADO'))
+            ->select(
+                'p.postulante_id',
+                'p.gestion_id',
+                'p.ci',
+                'p.nombres',
+                'p.apellidos',
+                'p.sexo',
+                DB::raw("COALESCE(ra.promedio_final, 0)::NUMERIC(5,2) as promedio_final"),
+                DB::raw("COALESCE(ra.promedio_desempate, 0)::NUMERIC(5,2) as promedio_desempate"),
+                DB::raw("COALESCE(ra.estado_academico::TEXT, 'PENDIENTE') as estado_academico_calculado"),
+                'ra.estado_academico',
+                'ra.estado_admision',
+                DB::raw('c.nombre as carrera_admitida')
+            )
+            ->orderByDesc('p.gestion_id')
+            ->orderBy('p.apellidos')
+            ->orderBy('p.nombres');
+
+        return response()->json($query->paginate($perPage));
     }
 
     // MODULO EXAMENES - carga notas de un postulante por materia y examen.
