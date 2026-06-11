@@ -3,7 +3,9 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Database\QueryException;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -26,5 +28,17 @@ return Application::configure(basePath: dirname(__DIR__))
                 'message' => 'Error de validacion.',
                 'errors' => $messages,
             ], 422);
+        });
+
+        $exceptions->render(function (QueryException $exception) {
+            return response()->json([
+                'message' => 'No se pudo completar la operacion por una restriccion de la base de datos.',
+            ], 409);
+        });
+
+        $exceptions->render(function (HttpExceptionInterface $exception) {
+            return response()->json([
+                'message' => $exception->getMessage() ?: 'No se pudo completar la solicitud.',
+            ], $exception->getStatusCode());
         });
     })->create();

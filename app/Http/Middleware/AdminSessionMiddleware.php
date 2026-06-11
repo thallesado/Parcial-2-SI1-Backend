@@ -32,12 +32,18 @@ class AdminSessionMiddleware
 
         $response = $next($request);
 
-        // BITACORA AUTOMATICA - registra rutas administrativas sin registrar consultas a la propia bitacora.
-        if (!$request->is('api/auth/me') && !$request->is('api/admin/bitacora')) {
+        // BITACORA AUTOMATICA - registra solo acciones que cambian datos.
+        // Las consultas GET se omiten para que la bitacora muestre movimientos importantes.
+        $shouldAudit = !$request->isMethod('get')
+            && !$request->is('api/auth/me')
+            && !$request->is('api/admin/bitacora')
+            && $response->getStatusCode() < 400;
+
+        if ($shouldAudit) {
             $session = Cache::get('admin_session_'.$token);
             DB::table('admision.bitacora_accion')->insert([
                 'usuario_id' => null,
-                'accion' => $request->isMethod('get') ? 'CONSULTAR' : 'PROCESO',
+                'accion' => $this->auditAction($request),
                 'tabla_afectada' => $request->path(),
                 'registro_id' => $request->route()?->parameter('postulante')?->postulante_id
                     ?? $request->route()?->parameter('carrera')?->carrera_id
@@ -54,5 +60,16 @@ class AdminSessionMiddleware
         }
 
         return $response;
+    }
+
+    // BITACORA HELPER - traduce metodo HTTP a una accion mas legible para reportes.
+    private function auditAction(Request $request): string
+    {
+        return match ($request->method()) {
+            'POST' => 'CREAR_O_PROCESAR',
+            'PUT', 'PATCH' => 'ACTUALIZAR',
+            'DELETE' => 'ELIMINAR',
+            default => 'PROCESO',
+        };
     }
 }

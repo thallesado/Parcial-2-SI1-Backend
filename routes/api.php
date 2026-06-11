@@ -1,11 +1,24 @@
 <?php
 
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AdminCatalogController;
+use App\Http\Controllers\Api\AdminDocenteController;
+use App\Http\Controllers\Api\AdminExamenController;
+use App\Http\Controllers\Api\AdminGroupController;
+use App\Http\Controllers\Api\AdminHorarioController;
+use App\Http\Controllers\Api\AdminPostulanteController;
+use App\Http\Controllers\Api\AdminReporteController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\PublicInscripcionController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('auth/login', [AuthController::class, 'login']);
 Route::get('portal', [AdminController::class, 'portal']);
+Route::get('inscripciones/opciones', [PublicInscripcionController::class, 'opciones']);
+Route::post('inscripciones/preparar', [PublicInscripcionController::class, 'preparar']);
+Route::post('inscripciones/{token}/confirmar-pago', [PublicInscripcionController::class, 'confirmarPago']);
+Route::get('inscripciones/{token}', [PublicInscripcionController::class, 'detalle']);
+Route::get('inscripciones/{token}/boleta.pdf', [PublicInscripcionController::class, 'boletaPdf']);
 
 Route::middleware(\App\Http\Middleware\AdminSessionMiddleware::class)->group(function () {
 Route::post('auth/logout', [AuthController::class, 'logout']);
@@ -13,53 +26,56 @@ Route::get('auth/me', [AuthController::class, 'me']);
 
 Route::prefix('admin')->group(function () {
     Route::get('dashboard', [AdminController::class, 'dashboard']);
-    Route::get('bitacora', [AdminController::class, 'bitacora']);
+    Route::get('bitacora', [AdminPostulanteController::class, 'bitacora']);
     Route::get('portal', [AdminController::class, 'portal']);
     Route::put('portal', [AdminController::class, 'updatePortal']);
 
-    Route::get('gestiones', [AdminController::class, 'gestiones']);
-    Route::post('gestiones', [AdminController::class, 'storeGestion']);
+    Route::get('gestiones', [AdminCatalogController::class, 'gestiones']);
+    Route::post('gestiones', [AdminCatalogController::class, 'storeGestion']);
 
-    Route::get('carreras', [AdminController::class, 'carreras']);
-    Route::post('carreras', [AdminController::class, 'storeCarrera']);
-    Route::put('carreras/{carrera}', [AdminController::class, 'updateCarrera']);
-    Route::delete('carreras/{carrera}', [AdminController::class, 'deleteCarrera']);
+    Route::get('carreras', [AdminCatalogController::class, 'carreras']);
+    Route::post('carreras', [AdminCatalogController::class, 'storeCarrera']);
+    Route::put('carreras/{carrera}', [AdminCatalogController::class, 'updateCarrera']);
+    Route::delete('carreras/{carrera}', [AdminCatalogController::class, 'deleteCarrera']);
 
-    Route::get('materias', [AdminController::class, 'materias']);
-    Route::post('materias', [AdminController::class, 'storeMateria']);
-    Route::put('materias/{materia}', [AdminController::class, 'updateMateria']);
-    Route::delete('materias/{materia}', [AdminController::class, 'deleteMateria']);
+    Route::get('materias', [AdminCatalogController::class, 'materias']);
+    Route::post('materias', [AdminCatalogController::class, 'storeMateria']);
+    Route::put('materias/{materia}', [AdminCatalogController::class, 'updateMateria']);
+    Route::delete('materias/{materia}', [AdminCatalogController::class, 'deleteMateria']);
 
-    Route::get('aulas', [AdminController::class, 'aulas']);
-    Route::post('aulas', [AdminController::class, 'storeAula']);
-    Route::delete('aulas/{aula}', [AdminController::class, 'deleteAula']);
+    Route::get('aulas', [AdminCatalogController::class, 'aulas']);
+    Route::post('aulas', [AdminCatalogController::class, 'storeAula']);
+    Route::delete('aulas/{aula}', [AdminCatalogController::class, 'deleteAula']);
 
-    Route::get('grupos/resumen', [AdminController::class, 'gruposResumen']);
-    Route::post('grupos', [AdminController::class, 'storeGrupo']);
-    Route::post('grupos/asignar', [AdminController::class, 'asignarGrupos']);
-    Route::get('grupos/{grupoId}/estudiantes', [AdminController::class, 'estudiantesGrupo']);
-    Route::put('grupos/{grupoId}', [AdminController::class, 'updateGrupo']);
-    Route::delete('grupos/{grupoId}', [AdminController::class, 'deleteGrupo']);
+    Route::get('grupos/resumen', [AdminGroupController::class, 'gruposResumen']);
+    Route::post('grupos', [AdminGroupController::class, 'storeGrupo']);
+    Route::post('grupos/asignar', [AdminGroupController::class, 'asignarGrupos']);
+    Route::get('grupos/{grupoId}/estudiantes', [AdminGroupController::class, 'estudiantesGrupo']);
+    Route::put('grupos/{grupoId}', [AdminGroupController::class, 'updateGrupo']);
+    Route::delete('grupos/{grupoId}', [AdminGroupController::class, 'deleteGrupo']);
 
-    Route::get('docentes', [AdminController::class, 'docentes']);
-    Route::post('docentes', [AdminController::class, 'storeDocente']);
-    Route::put('docentes/{docente}', [AdminController::class, 'updateDocente']);
-    Route::delete('docentes/{docente}', [AdminController::class, 'deleteDocente']);
-    Route::get('docentes/asignaciones/grupos', [AdminController::class, 'docenteAsignaciones']);
-    Route::post('docentes/asignaciones/grupos', [AdminController::class, 'asignarDocenteGrupoMateria']);
+    Route::get('docentes', [AdminDocenteController::class, 'docentes']);
+    Route::post('docentes', [AdminDocenteController::class, 'storeDocente']);
+    Route::put('docentes/{docente}', [AdminDocenteController::class, 'updateDocente']);
+    Route::delete('docentes/{docente}', [AdminDocenteController::class, 'deleteDocente']);
+    Route::get('docentes/asignaciones/grupos', [AdminDocenteController::class, 'docenteAsignaciones']);
+    Route::post('docentes/asignaciones/grupos', [AdminDocenteController::class, 'asignarDocenteGrupoMateria']);
+    Route::get('horarios', [AdminHorarioController::class, 'horarios']);
+    Route::post('horarios', [AdminHorarioController::class, 'storeHorario']);
+    Route::delete('horarios/{horarioId}', [AdminHorarioController::class, 'deleteHorario']);
 
-    Route::get('postulantes', [AdminController::class, 'postulantes']);
-    Route::post('postulantes', [AdminController::class, 'storePostulante']);
-    Route::put('postulantes/{postulante}', [AdminController::class, 'updatePostulante']);
-    Route::delete('postulantes/{postulante}', [AdminController::class, 'deletePostulante']);
+    Route::get('postulantes', [AdminPostulanteController::class, 'postulantes']);
+    Route::post('postulantes', [AdminPostulanteController::class, 'storePostulante']);
+    Route::put('postulantes/{postulante}', [AdminPostulanteController::class, 'updatePostulante']);
+    Route::delete('postulantes/{postulante}', [AdminPostulanteController::class, 'deletePostulante']);
 
-    Route::get('examenes/postulantes', [AdminController::class, 'postulantesExamenes']);
-    Route::get('examenes/notas/{postulante}', [AdminController::class, 'notasPostulante']);
-    Route::post('examenes/notas/{postulante}', [AdminController::class, 'storeNotasPostulante']);
+    Route::get('examenes/postulantes', [AdminExamenController::class, 'postulantesExamenes']);
+    Route::get('examenes/notas/{postulante}', [AdminExamenController::class, 'notasPostulante']);
+    Route::post('examenes/notas/{postulante}', [AdminExamenController::class, 'storeNotasPostulante']);
 
-    Route::get('cupos', [AdminController::class, 'cupos']);
-    Route::post('cupos', [AdminController::class, 'storeCupo']);
+    Route::get('cupos', [AdminCatalogController::class, 'cupos']);
+    Route::post('cupos', [AdminCatalogController::class, 'storeCupo']);
 
-    Route::get('reportes/{tipo}', [AdminController::class, 'reportes']);
+    Route::get('reportes/{tipo}', [AdminReporteController::class, 'reportes']);
 });
 });
