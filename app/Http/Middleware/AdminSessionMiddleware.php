@@ -66,8 +66,8 @@ class AdminSessionMiddleware
     private function auditAction(Request $request): string
     {
         return match ($request->method()) {
-            'POST' => 'CREAR_O_PROCESAR',
-            'PUT', 'PATCH' => 'ACTUALIZAR',
+            'POST' => 'CREAR',
+            'PUT', 'PATCH' => 'MODIFICAR',
             'DELETE' => 'ELIMINAR',
             default => 'PROCESO',
         };

@@ -79,8 +79,8 @@ class AdminHorarioController extends Controller
             return response()->json(['message' => 'Primero asigna un docente a esta materia y grupo.'], 422);
         }
 
-        $minutes = (strtotime($data['hora_fin']) - strtotime($data['hora_inicio'])) / 60;
-        if ($minutes !== 90.0) {
+        $minutes = (int) round((strtotime($data['hora_fin']) - strtotime($data['hora_inicio'])) / 60);
+        if ($minutes !== 90) {
             return response()->json(['message' => 'Cada bloque de clase debe durar exactamente 1 hora y 30 minutos.'], 422);
         }
 

@@ -97,9 +97,22 @@ class AdminPostulanteController extends Controller
     public function bitacora(Request $request): JsonResponse
     {
         $perPage = min(max((int) $request->integer('per_page', 20), 10), 100);
+        $search = trim((string) $request->query('search', ''));
 
         return response()->json(
             DB::table('admision.bitacora_accion')
+                ->when($search !== '', function ($query) use ($search) {
+                    $like = '%'.$search.'%';
+
+                    $query->where(function ($subQuery) use ($like) {
+                        $subQuery
+                            ->where('accion', 'ILIKE', $like)
+                            ->orWhere('tabla_afectada', 'ILIKE', $like)
+                            ->orWhere('registro_id', 'ILIKE', $like)
+                            ->orWhere('descripcion', 'ILIKE', $like)
+                            ->orWhere('ip', 'ILIKE', $like);
+                    });
+                })
                 ->orderByDesc('fecha_hora')
                 ->paginate($perPage)
         );
