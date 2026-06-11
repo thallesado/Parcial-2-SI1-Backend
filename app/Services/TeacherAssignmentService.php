@@ -29,15 +29,25 @@ class TeacherAssignmentService
             ->where('estado', 'ACTIVO')
             ->pluck('grupo_id');
         $materias = Materia::query()->where('estado', 'ACTIVO')->pluck('materia_id');
+        $now = now();
+        $rows = [];
 
         foreach ($grupos as $grupoId) {
             foreach ($materias as $materiaId) {
-                DB::table('admision.grupo_materia_docente')->updateOrInsert(
-                    ['grupo_id' => $grupoId, 'materia_id' => $materiaId],
-                    ['asignado_en' => now()]
-                );
+                $rows[] = [
+                    'grupo_id' => $grupoId,
+                    'materia_id' => $materiaId,
+                    'asignado_en' => $now,
+                ];
             }
         }
+
+        if ($rows === []) {
+            return;
+        }
+
+        // Insercion masiva: evita un roundtrip por cada grupo/materia en Render.
+        DB::table('admision.grupo_materia_docente')->insertOrIgnore($rows);
     }
 
     // SERVICIO DOCENTES - calcula cuantos grupos mas puede tomar cada docente por materia.
