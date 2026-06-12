@@ -16,7 +16,9 @@ Route::post('auth/login', [AuthController::class, 'login']);
 Route::get('portal', [AdminController::class, 'portal']);
 Route::get('inscripciones/opciones', [PublicInscripcionController::class, 'opciones']);
 Route::post('inscripciones/preparar', [PublicInscripcionController::class, 'preparar']);
-Route::post('inscripciones/{token}/confirmar-pago', [PublicInscripcionController::class, 'confirmarPago']);
+Route::post('stripe/webhook', [PublicInscripcionController::class, 'webhook']);
+Route::get('inscripciones/{token}/estado', [PublicInscripcionController::class, 'estado']);
+Route::post('inscripciones/{token}/cancelar', [PublicInscripcionController::class, 'cancelar']);
 Route::get('inscripciones/{token}', [PublicInscripcionController::class, 'detalle']);
 Route::get('inscripciones/{token}/boleta.pdf', [PublicInscripcionController::class, 'boletaPdf']);
 

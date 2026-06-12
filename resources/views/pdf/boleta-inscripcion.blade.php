@@ -103,7 +103,7 @@
                 <td><div class="label">Metodo</div><div class="value">{{ $detalle['pago']->metodo }}</div></td>
             </tr>
             <tr>
-                <td><div class="label">Monto</div><div class="value">Bs. {{ number_format((float) $detalle['pago']->monto, 2) }}</div></td>
+                <td><div class="label">Monto</div><div class="value">{{ strtoupper($detalle['pago']->moneda ?? 'USD') }} {{ number_format((float) $detalle['pago']->monto, 2) }}</div></td>
                 <td><div class="label">Comprobante</div><div class="value">{{ $detalle['pago']->numero_comprobante }}</div></td>
             </tr>
         </table>

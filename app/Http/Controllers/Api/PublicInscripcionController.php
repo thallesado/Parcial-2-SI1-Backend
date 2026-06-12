@@ -7,16 +7,23 @@ use App\Models\Carrera;
 use App\Models\GestionAcademica;
 use App\Models\Materia;
 use App\Models\Postulante;
+use App\Services\StripeInscripcionService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Stripe\Exception\ApiErrorException;
 
 class PublicInscripcionController extends Controller
 {
+    public function __construct(private readonly StripeInscripcionService $stripe)
+    {
+    }
+
     // PORTAL INSCRIPCION - catalogos publicos para el formulario externo.
     public function opciones(): JsonResponse
     {
@@ -35,43 +42,112 @@ class PublicInscripcionController extends Controller
                 ->where('estado', 'ACTIVO')
                 ->orderBy('nombre')
                 ->get(['carrera_id', 'codigo', 'nombre']),
-            'monto_inscripcion' => 200,
-            'tiempo_pago_segundos' => 300,
+            'monto_inscripcion' => $this->stripe->amount(),
+            'moneda_inscripcion' => strtoupper($this->stripe->currency()),
+            'tiempo_pago_segundos' => $this->stripe->timeoutMinutes() * 60,
+            'concepto_pago' => $this->stripe->productName(),
         ]);
     }
 
-    // PORTAL INSCRIPCION - guarda una solicitud temporal por 5 minutos.
+    // PORTAL INSCRIPCION - prepara el pago real en Stripe y guarda la solicitud temporal.
     public function preparar(Request $request): JsonResponse
     {
         $request->merge($this->trimStrings($request->all()));
         $data = $request->validate($this->rules($request), $this->messages());
         $token = Str::random(64);
+        $expiresAt = now()->addMinutes($this->stripe->timeoutMinutes());
+        $paymentIntent = $this->stripe->createPaymentIntent($data, $token, $expiresAt);
 
-        DB::table('admision.inscripcion_temporal')->insert([
-            'token' => $token,
-            'datos' => json_encode($data),
-            'estado' => 'PENDIENTE',
-            'expira_en' => now()->addMinutes(5),
-            'creado_en' => now(),
-            'actualizado_en' => now(),
-        ]);
+        try {
+            DB::table('admision.inscripcion_temporal')->insert([
+                'token' => $token,
+                'datos' => json_encode($data),
+                'estado' => 'PENDIENTE',
+                'monto' => $this->stripe->amount(),
+                'moneda' => strtoupper($this->stripe->currency()),
+                'stripe_payment_intent_id' => $paymentIntent->id,
+                'stripe_client_secret' => $paymentIntent->client_secret,
+                'stripe_estado' => $paymentIntent->status,
+                'expira_en' => $expiresAt,
+                'creado_en' => now(),
+                'actualizado_en' => now(),
+            ]);
+        } catch (\Throwable $exception) {
+            $this->cancelStripeIntentSilently($paymentIntent->id);
+            throw $exception;
+        }
 
         return response()->json([
             'token' => $token,
-            'expira_en' => now()->addMinutes(5)->toISOString(),
-            'monto' => 200,
+            'expira_en' => $expiresAt->toISOString(),
+            'monto' => $this->stripe->amount(),
+            'moneda' => strtoupper($this->stripe->currency()),
+            'client_secret' => $paymentIntent->client_secret,
+            'payment_intent_id' => $paymentIntent->id,
         ], 201);
     }
 
-    // PORTAL INSCRIPCION - pago simulado; recien aqui se consolida el postulante.
-    public function confirmarPago(Request $request, string $token): JsonResponse
+    // PORTAL INSCRIPCION - webhook oficial de Stripe para consolidar el pago confirmado.
+    public function webhook(Request $request): JsonResponse
     {
-        $data = $request->validate([
-            'metodo' => ['nullable', 'max:40'],
-            'monto' => ['nullable', 'numeric', 'min:0'],
-        ]);
+        $signature = (string) $request->header('Stripe-Signature');
+        abort_unless(config('services.stripe.webhook_secret'), 500, 'Webhook de Stripe no configurado.');
 
-        $resultado = DB::transaction(function () use ($token, $data) {
+        $event = $this->stripe->constructWebhookEvent(
+            (string) $request->getContent(),
+            $signature
+        );
+
+        $object = $event->data->object;
+
+        if ($event->type === 'payment_intent.succeeded' && isset($object->id)) {
+            $this->sincronizarPagoPorIntent($object->id);
+        }
+
+        if ($event->type === 'payment_intent.canceled' && isset($object->id)) {
+            DB::table('admision.inscripcion_temporal')
+                ->where('stripe_payment_intent_id', $object->id)
+                ->where('estado', 'PENDIENTE')
+                ->update([
+                    'estado' => 'CANCELADA',
+                    'stripe_estado' => $object->status ?? 'canceled',
+                    'actualizado_en' => now(),
+                ]);
+        }
+
+        return response()->json(['received' => true]);
+    }
+
+    // PORTAL INSCRIPCION - devuelve el estado actual y sincroniza con Stripe cuando hace falta.
+    public function estado(string $token): JsonResponse
+    {
+        $solicitud = DB::table('admision.inscripcion_temporal')
+            ->where('token', $token)
+            ->first();
+
+        abort_unless($solicitud, 404, 'Solicitud de inscripcion no encontrada.');
+
+        $solicitud = $this->resolverEstadoTemporal($solicitud);
+
+        $response = [
+            'estado' => $solicitud->estado,
+            'expira_en' => Carbon::parse($solicitud->expira_en)->toISOString(),
+            'monto' => (float) $solicitud->monto,
+            'moneda' => $solicitud->moneda,
+            'stripe_estado' => $solicitud->stripe_estado,
+        ];
+
+        if ($solicitud->estado === 'PAGADA') {
+            $response['boleta'] = $this->detalleArray($token);
+        }
+
+        return response()->json($response);
+    }
+
+    // PORTAL INSCRIPCION - permite cancelar por timeout o por cambio de datos antes del pago.
+    public function cancelar(string $token): JsonResponse
+    {
+        DB::transaction(function () use ($token) {
             $solicitud = DB::table('admision.inscripcion_temporal')
                 ->where('token', $token)
                 ->lockForUpdate()
@@ -80,15 +156,128 @@ class PublicInscripcionController extends Controller
             abort_unless($solicitud, 404, 'Solicitud de inscripcion no encontrada.');
 
             if ($solicitud->estado === 'PAGADA') {
-                return $this->detalleArray($token);
+                return;
             }
 
-            if ($solicitud->estado !== 'PENDIENTE' || now()->greaterThan(Carbon::parse($solicitud->expira_en))) {
-                DB::table('admision.inscripcion_temporal')
-                    ->where('token', $token)
-                    ->update(['estado' => 'EXPIRADA', 'actualizado_en' => now()]);
+            if ($solicitud->stripe_payment_intent_id) {
+                try {
+                    $paymentIntent = $this->stripe->retrievePaymentIntent($solicitud->stripe_payment_intent_id);
+                    if ($this->stripe->canCancelStatus($paymentIntent->status)) {
+                        $this->stripe->cancelPaymentIntent($paymentIntent->id);
+                    }
+                } catch (ApiErrorException $exception) {
+                    Log::warning('No se pudo cancelar el PaymentIntent de Stripe.', [
+                        'token' => $token,
+                        'payment_intent_id' => $solicitud->stripe_payment_intent_id,
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
+            }
 
-                abort(410, 'El tiempo para confirmar el pago vencio. Vuelve a iniciar la inscripcion.');
+            DB::table('admision.inscripcion_temporal')
+                ->where('token', $token)
+                ->update([
+                    'estado' => now()->greaterThan(Carbon::parse($solicitud->expira_en)) ? 'EXPIRADA' : 'CANCELADA',
+                    'stripe_estado' => 'canceled',
+                    'actualizado_en' => now(),
+                ]);
+        });
+
+        return response()->json(['ok' => true]);
+    }
+
+    // PORTAL INSCRIPCION - boleta oficial consolidada luego del pago.
+    public function detalle(string $token): JsonResponse
+    {
+        return response()->json($this->detalleArray($token));
+    }
+
+    // PORTAL INSCRIPCION - descarga PDF oficial de boleta.
+    public function boletaPdf(string $token)
+    {
+        $detalle = $this->detalleArray($token);
+        $pdf = Pdf::loadView('pdf.boleta-inscripcion', ['detalle' => $detalle])
+            ->setPaper('letter');
+
+        $nombre = 'boleta-inscripcion-'.$detalle['postulante']->postulante_id.'.pdf';
+
+        return $pdf->download($nombre);
+    }
+
+    private function resolverEstadoTemporal(object $solicitud): object
+    {
+        if ($solicitud->estado === 'PAGADA') {
+            return $solicitud;
+        }
+
+        if (now()->greaterThan(Carbon::parse($solicitud->expira_en)) && $solicitud->estado === 'PENDIENTE') {
+            $this->cancelarInternamente($solicitud);
+            return (object) array_merge((array) $solicitud, [
+                'estado' => 'EXPIRADA',
+                'stripe_estado' => 'canceled',
+            ]);
+        }
+
+        if (!$solicitud->stripe_payment_intent_id) {
+            return $solicitud;
+        }
+
+        try {
+            $paymentIntent = $this->stripe->retrievePaymentIntent($solicitud->stripe_payment_intent_id);
+        } catch (ApiErrorException $exception) {
+            Log::warning('No se pudo consultar Stripe para una inscripcion temporal.', [
+                'token' => $solicitud->token,
+                'payment_intent_id' => $solicitud->stripe_payment_intent_id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return $solicitud;
+        }
+
+        DB::table('admision.inscripcion_temporal')
+            ->where('token', $solicitud->token)
+            ->update([
+                'stripe_estado' => $paymentIntent->status,
+                'actualizado_en' => now(),
+            ]);
+
+        if ($paymentIntent->status === 'succeeded') {
+            $this->sincronizarPagoPorIntent($paymentIntent->id);
+
+            return DB::table('admision.inscripcion_temporal')
+                ->where('token', $solicitud->token)
+                ->first();
+        }
+
+        if ($paymentIntent->status === 'canceled' && $solicitud->estado === 'PENDIENTE') {
+            DB::table('admision.inscripcion_temporal')
+                ->where('token', $solicitud->token)
+                ->update([
+                    'estado' => now()->greaterThan(Carbon::parse($solicitud->expira_en)) ? 'EXPIRADA' : 'CANCELADA',
+                    'stripe_estado' => $paymentIntent->status,
+                    'actualizado_en' => now(),
+                ]);
+
+            return DB::table('admision.inscripcion_temporal')
+                ->where('token', $solicitud->token)
+                ->first();
+        }
+
+        return (object) array_merge((array) $solicitud, [
+            'stripe_estado' => $paymentIntent->status,
+        ]);
+    }
+
+    private function sincronizarPagoPorIntent(string $paymentIntentId): void
+    {
+        DB::transaction(function () use ($paymentIntentId) {
+            $solicitud = DB::table('admision.inscripcion_temporal')
+                ->where('stripe_payment_intent_id', $paymentIntentId)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$solicitud || $solicitud->estado === 'PAGADA') {
+                return;
             }
 
             $payload = json_decode($solicitud->datos, true);
@@ -128,41 +317,77 @@ class PublicInscripcionController extends Controller
 
             DB::table('admision.pago_inscripcion')->insert([
                 'postulante_id' => $postulante->postulante_id,
-                'token_inscripcion' => $token,
-                'monto' => $data['monto'] ?? 200,
-                'metodo' => $data['metodo'] ?? 'SIMULADO',
-                'numero_comprobante' => 'SIM-'.strtoupper(substr($token, 0, 12)),
+                'token_inscripcion' => $solicitud->token,
+                'monto' => $solicitud->monto,
+                'moneda' => $solicitud->moneda,
+                'proveedor' => 'STRIPE',
+                'metodo' => 'STRIPE_CARD',
+                'numero_comprobante' => $paymentIntentId,
+                'referencia_externa' => $paymentIntentId,
                 'estado' => 'PAGADO',
                 'pagado_en' => now(),
                 'creado_en' => now(),
             ]);
 
             DB::table('admision.inscripcion_temporal')
-                ->where('token', $token)
-                ->update(['estado' => 'PAGADA', 'actualizado_en' => now()]);
-
-            return $this->detalleArray($token);
+                ->where('token', $solicitud->token)
+                ->update([
+                    'estado' => 'PAGADA',
+                    'stripe_estado' => 'succeeded',
+                    'pagado_en' => now(),
+                    'actualizado_en' => now(),
+                ]);
         });
-
-        return response()->json($resultado, 201);
     }
 
-    // PORTAL INSCRIPCION - datos oficiales de la boleta en pantalla.
-    public function detalle(string $token): JsonResponse
+    private function cancelarInternamente(object $solicitud): void
     {
-        return response()->json($this->detalleArray($token));
+        if (!$solicitud->stripe_payment_intent_id) {
+            DB::table('admision.inscripcion_temporal')
+                ->where('token', $solicitud->token)
+                ->update([
+                    'estado' => 'EXPIRADA',
+                    'actualizado_en' => now(),
+                ]);
+
+            return;
+        }
+
+        try {
+            $paymentIntent = $this->stripe->retrievePaymentIntent($solicitud->stripe_payment_intent_id);
+            if ($this->stripe->canCancelStatus($paymentIntent->status)) {
+                $this->stripe->cancelPaymentIntent($paymentIntent->id);
+            }
+        } catch (ApiErrorException $exception) {
+            Log::warning('No se pudo cancelar una solicitud temporal expirada.', [
+                'token' => $solicitud->token,
+                'payment_intent_id' => $solicitud->stripe_payment_intent_id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        DB::table('admision.inscripcion_temporal')
+            ->where('token', $solicitud->token)
+            ->update([
+                'estado' => 'EXPIRADA',
+                'stripe_estado' => 'canceled',
+                'actualizado_en' => now(),
+            ]);
     }
 
-    // PORTAL INSCRIPCION - descarga PDF oficial de boleta.
-    public function boletaPdf(string $token)
+    private function cancelStripeIntentSilently(string $paymentIntentId): void
     {
-        $detalle = $this->detalleArray($token);
-        $pdf = Pdf::loadView('pdf.boleta-inscripcion', ['detalle' => $detalle])
-            ->setPaper('letter');
-
-        $nombre = 'boleta-inscripcion-'.$detalle['postulante']->postulante_id.'.pdf';
-
-        return $pdf->download($nombre);
+        try {
+            $paymentIntent = $this->stripe->retrievePaymentIntent($paymentIntentId);
+            if ($this->stripe->canCancelStatus($paymentIntent->status)) {
+                $this->stripe->cancelPaymentIntent($paymentIntentId);
+            }
+        } catch (ApiErrorException $exception) {
+            Log::warning('No se pudo cancelar un PaymentIntent huerfano.', [
+                'payment_intent_id' => $paymentIntentId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     private function detalleArray(string $token): array

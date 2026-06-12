@@ -13,7 +13,7 @@ Aqui estan los endpoints JSON que consume el frontend.
 - `AdminGroupController.php`: grupos, estudiantes por grupo y asignacion automatica.
 - `AdminHorarioController.php`: horarios, validacion de choques y eliminacion.
 - `AdminReporteController.php`: reportes paginados y filtrables.
-- `PublicInscripcionController.php`: formulario publico, pago simulado, asignacion de grupo y boleta PDF.
+- `PublicInscripcionController.php`: formulario publico, pago con Stripe en modo test, asignacion de grupo y boleta PDF.
 
 ## Como leer un controlador
 
@@ -29,7 +29,7 @@ storePostulante
 postulantesExamenes
 asignarDocenteGrupoMateria
 reportes
-confirmarPago
+webhook
 ```
 
 ## Carpeta Concerns
