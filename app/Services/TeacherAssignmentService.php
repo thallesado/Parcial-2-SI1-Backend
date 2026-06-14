@@ -82,7 +82,7 @@ class TeacherAssignmentService
             ->count();
 
         if ($requisitosValidados < $requisitosObligatorios) {
-            return 'El docente debe tener titulo profesional, maestria y diplomado validados antes de ser asignado.';
+            return 'El docente debe tener el titulo profesional y el diplomado validados antes de ser asignado.';
         }
 
         $puedeDictar = DB::table('admision.docente_materia')

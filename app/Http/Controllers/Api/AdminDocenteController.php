@@ -43,6 +43,7 @@ class AdminDocenteController extends Controller
                     'dr.tipo_requisito_id',
                     'tr.codigo',
                     'tr.nombre',
+                    'tr.obligatorio',
                     'dr.descripcion',
                     'dr.institucion',
                     'dr.fecha_obtencion',
@@ -56,13 +57,19 @@ class AdminDocenteController extends Controller
                 ->orderBy('tr.tipo_requisito_id')
                 ->get()
                 ->groupBy('docente_id');
+            $requisitosObligatorios = DB::table('admision.tipo_requisito_docente')
+                ->where('obligatorio', true)
+                ->count();
 
-            return $docentes->map(function (Docente $docente) use ($materias, $requisitos) {
+            return $docentes->map(function (Docente $docente) use ($materias, $requisitos, $requisitosObligatorios) {
                 $asignadas = $materias->get($docente->docente_id, collect());
                 $docente->materia_ids = $asignadas->pluck('materia_id')->values();
                 $docente->materias = $asignadas->pluck('nombre')->values()->implode(', ');
                 $docente->requisitos = $requisitos->get($docente->docente_id, collect())->values();
-                $docente->documentacion_estado = $this->estadoDocumentacion($docente->requisitos);
+                $docente->documentacion_estado = $this->estadoDocumentacion(
+                    $docente->requisitos,
+                    $requisitosObligatorios
+                );
 
                 return (new DocenteResource($docente))->resolve();
             });
@@ -237,7 +244,14 @@ class AdminDocenteController extends Controller
 
     private function docenteRules(bool $creating, ?Docente $docente = null): array
     {
-        $documentRule = $creating ? ['required', 'file'] : ['nullable', 'file'];
+        $requiredDocumentRule = $creating ? ['required', 'file'] : ['nullable', 'file'];
+        $maestriaDatos = request()->input('requisitos.MAESTRIA', []);
+        $maestriaInformada = request()->hasFile('documentos.MAESTRIA')
+            || collect($maestriaDatos)->contains(fn ($value) => filled($value));
+        $maestriaFieldRule = Rule::requiredIf($maestriaInformada);
+        $maestriaDocumentRule = $creating && $maestriaInformada
+            ? ['required', 'file']
+            : ['nullable', 'file'];
 
         return [
             'ci' => [
@@ -267,25 +281,42 @@ class AdminDocenteController extends Controller
             'requisitos.PROF_AREA.institucion' => ['required', 'string', 'max:150'],
             'requisitos.PROF_AREA.fecha_obtencion' => ['required', 'date'],
             'requisitos.PROF_AREA.codigo_documento' => ['required', 'string', 'max:80'],
-            'requisitos.MAESTRIA.descripcion' => ['required', 'string', 'max:200'],
-            'requisitos.MAESTRIA.institucion' => ['required', 'string', 'max:150'],
-            'requisitos.MAESTRIA.fecha_obtencion' => ['required', 'date'],
-            'requisitos.MAESTRIA.codigo_documento' => ['required', 'string', 'max:80'],
+            'requisitos.MAESTRIA.descripcion' => [$maestriaFieldRule, 'nullable', 'string', 'max:200'],
+            'requisitos.MAESTRIA.institucion' => [$maestriaFieldRule, 'nullable', 'string', 'max:150'],
+            'requisitos.MAESTRIA.fecha_obtencion' => [$maestriaFieldRule, 'nullable', 'date'],
+            'requisitos.MAESTRIA.codigo_documento' => [$maestriaFieldRule, 'nullable', 'string', 'max:80'],
             'requisitos.DIP_EDU_SUP.descripcion' => ['required', 'string', 'max:200'],
             'requisitos.DIP_EDU_SUP.institucion' => ['required', 'string', 'max:150'],
             'requisitos.DIP_EDU_SUP.fecha_obtencion' => ['required', 'date'],
             'requisitos.DIP_EDU_SUP.codigo_documento' => ['required', 'string', 'max:80'],
             'documentos' => ['nullable', 'array'],
-            'documentos.PROF_AREA' => [...$documentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
-            'documentos.MAESTRIA' => [...$documentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
-            'documentos.DIP_EDU_SUP' => [...$documentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
+            'documentos.PROF_AREA' => [...$requiredDocumentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
+            'documentos.MAESTRIA' => [...$maestriaDocumentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
+            'documentos.DIP_EDU_SUP' => [...$requiredDocumentRule, 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
         ];
     }
 
     private function docenteMessages(): array
     {
         return [
-            'documentos.*.required' => 'Debes adjuntar los tres documentos profesionales.',
+            'ci.required' => 'El CI del docente es obligatorio.',
+            'ci.unique' => 'Ya existe un docente registrado con ese CI.',
+            'nombres.required' => 'Los nombres del docente son obligatorios.',
+            'apellidos.required' => 'Los apellidos del docente son obligatorios.',
+            'telefono.required' => 'El telefono del docente es obligatorio.',
+            'correo.required' => 'El correo del docente es obligatorio.',
+            'correo.email' => 'Ingresa un correo electronico valido.',
+            'correo.unique' => 'Ya existe un docente registrado con ese correo electronico.',
+            'especialidad.required' => 'La especialidad del docente es obligatoria.',
+            'estado.required' => 'El estado del docente es obligatorio.',
+            'materia_ids.required' => 'Selecciona al menos una materia que pueda dictar el docente.',
+            'materia_ids.min' => 'Selecciona al menos una materia que pueda dictar el docente.',
+            'materia_ids.*.required' => 'La materia seleccionada no es valida.',
+            'materia_ids.*.exists' => 'La materia seleccionada no existe.',
+            'requisitos.required' => 'Completa los requisitos profesionales del docente.',
+            'documentos.PROF_AREA.required' => 'Debes adjuntar el titulo profesional del docente.',
+            'documentos.DIP_EDU_SUP.required' => 'Debes adjuntar el diplomado en educacion superior.',
+            'documentos.MAESTRIA.required' => 'Adjunta el titulo de maestria si completas sus datos.',
             'documentos.*.mimes' => 'Los documentos deben ser imagenes JPG, PNG, WEBP o archivos PDF.',
             'documentos.*.max' => 'Cada documento puede pesar como maximo 5 MB.',
             'requisitos.*.*.required' => 'Completa todos los datos academicos del docente.',
@@ -303,6 +334,13 @@ class AdminDocenteController extends Controller
             abort_unless($tipoId, 422, "No existe el requisito docente {$codigo}.");
 
             $archivo = $request->file("documentos.{$codigo}");
+            $tieneDatos = collect($requisito)->contains(fn ($value) => filled($value));
+
+            // La maestria es opcional: no se crea una fila vacia si el docente no la presenta.
+            if ($codigo === 'MAESTRIA' && ! $tieneDatos && ! $archivo) {
+                continue;
+            }
+
             $values = [
                 'descripcion' => $requisito['descripcion'],
                 'institucion' => $requisito['institucion'],
@@ -333,15 +371,17 @@ class AdminDocenteController extends Controller
         }
     }
 
-    private function estadoDocumentacion($requisitos): string
+    private function estadoDocumentacion($requisitos, int $requisitosObligatorios): string
     {
-        if ($requisitos->count() < 3) {
+        $obligatorios = $requisitos->filter(fn ($item) => (bool) $item->obligatorio);
+
+        if ($obligatorios->count() < $requisitosObligatorios) {
             return 'INCOMPLETA';
         }
-        if ($requisitos->contains(fn ($item) => $item->estado_validacion === 'RECHAZADO')) {
+        if ($obligatorios->contains(fn ($item) => $item->estado_validacion === 'RECHAZADO')) {
             return 'RECHAZADA';
         }
-        if ($requisitos->every(fn ($item) => $item->estado_validacion === 'VALIDADO')) {
+        if ($obligatorios->every(fn ($item) => $item->estado_validacion === 'VALIDADO')) {
             return 'VALIDADA';
         }
 
