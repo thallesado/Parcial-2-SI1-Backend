@@ -10,24 +10,15 @@ Contiene archivos de configuracion del backend.
 - `logging.php`: logs.
 - `session.php`: sesiones.
 - `queue.php`: colas.
-- `admin_credentials.php`: usuario y contrasena inicial del administrador.
+- `admin_credentials.php`: duracion y parametros generales de sesion.
+- `roles.php`: prioridad y modulos visibles de cada rol.
 
-## Credenciales administrativas
+## Credenciales y roles
 
-Archivo:
-
-```text
-config/admin_credentials.php
-```
-
-Credenciales iniciales:
-
-```text
-usuario: admin
-clave:   Admin1234
-```
-
-Para produccion, cambia estas credenciales usando variables de entorno.
+Las cuentas y contrasenas ya no se leen desde archivos de configuracion. Se
+almacenan en PostgreSQL mediante `usuario`, `rol`, `usuario_rol` y
+`usuario_docente`. `config/roles.php` solamente define que secciones corresponden
+a cada perfil.
 
 ## Nota de seguridad
 

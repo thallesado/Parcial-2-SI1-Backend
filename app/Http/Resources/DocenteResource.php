@@ -21,6 +21,8 @@ class DocenteResource extends JsonResource
             'estado' => $this->estado,
             'materia_ids' => $this->materia_ids ?? [],
             'materias' => $this->materias ?? '',
+            'requisitos' => $this->requisitos ?? [],
+            'documentacion_estado' => $this->documentacion_estado ?? 'INCOMPLETA',
         ];
     }
 }

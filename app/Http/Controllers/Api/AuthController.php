@@ -7,12 +7,12 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    // MODULO AUTENTICACION LOGIN - valida credenciales iniciales desde config/admin_credentials.php.
-    // Si falla o acierta, registra el intento en bitacora_accion.
+    // AUTENTICACION - valida usuarios persistidos y construye una sesion con roles y secciones.
     public function login(Request $request): JsonResponse
     {
         $data = $request->validate([
@@ -23,61 +23,75 @@ class AuthController extends Controller
             'contrasena.required' => 'La contrasena es obligatoria.',
         ]);
 
-        if (
-            $data['usuario'] !== config('admin_credentials.username')
-            || !password_verify($data['contrasena'], config('admin_credentials.password_hash'))
-        ) {
-            DB::table('admision.bitacora_accion')->insert([
-                'usuario_id' => null,
-                'accion' => 'LOGIN',
-                'tabla_afectada' => 'auth',
-                'registro_id' => $data['usuario'],
-                'descripcion' => 'Intento fallido de inicio de sesion',
-                'fecha_hora' => now(),
-                'ip' => $request->ip(),
-            ]);
+        $usuario = DB::table('admision.usuario')
+            ->where('nombre_usuario', $data['usuario'])
+            ->where('estado', 'ACTIVO')
+            ->first();
+
+        if (!$usuario || !Hash::check($data['contrasena'], $usuario->password_hash)) {
+            $this->auditLogin($request, null, $data['usuario'], 'Intento fallido de inicio de sesion');
 
             return response()->json(['message' => 'Usuario o contrasena incorrectos.'], 422);
         }
 
+        $roles = DB::table('admision.usuario_rol as ur')
+            ->join('admision.rol as r', 'r.rol_id', '=', 'ur.rol_id')
+            ->where('ur.usuario_id', $usuario->usuario_id)
+            ->where('r.estado', 'ACTIVO')
+            ->orderByDesc('r.prioridad')
+            ->pluck('r.nombre')
+            ->all();
+
+        if ($roles === []) {
+            return response()->json(['message' => 'El usuario no tiene un rol activo asignado.'], 403);
+        }
+
+        $rolPrincipal = $roles[0];
+        $docenteId = DB::table('admision.usuario_docente')
+            ->where('usuario_id', $usuario->usuario_id)
+            ->value('docente_id');
+
+        if ($rolPrincipal === 'DOCENTE' && !$docenteId) {
+            return response()->json(['message' => 'La cuenta docente no esta vinculada a un docente.'], 403);
+        }
+
         $token = Str::random(64);
-
-        Cache::put('admin_session_'.$token, [
-            'usuario' => $data['usuario'],
+        $session = [
+            'usuario_id' => $usuario->usuario_id,
+            'usuario' => $usuario->nombre_usuario,
+            'nombre_completo' => trim($usuario->nombres.' '.$usuario->apellidos),
+            'roles' => $roles,
+            'rol' => $rolPrincipal,
+            'docente_id' => $docenteId,
+            'secciones' => config("roles.secciones.{$rolPrincipal}", []),
             'inicio' => now()->toDateTimeString(),
-        ], now()->addMinutes(config('admin_credentials.session_minutes')));
+        ];
 
-        DB::table('admision.bitacora_accion')->insert([
-            'usuario_id' => null,
-            'accion' => 'LOGIN',
-            'tabla_afectada' => 'auth',
-            'registro_id' => $data['usuario'],
-            'descripcion' => 'Inicio de sesion correcto',
-            'fecha_hora' => now(),
-            'ip' => $request->ip(),
-        ]);
+        Cache::put(
+            'admin_session_'.$token,
+            $session,
+            now()->addMinutes(config('admin_credentials.session_minutes'))
+        );
 
-        return response()->json([
-            'token' => $token,
-            'usuario' => $data['usuario'],
-        ]);
+        $this->auditLogin($request, $usuario->usuario_id, $usuario->nombre_usuario, 'Inicio de sesion correcto');
+
+        return response()->json(['token' => $token, ...$session]);
     }
 
-    // MODULO AUTENTICACION LOGOUT - elimina token de cache y deja registro en bitacora.
     public function logout(Request $request): JsonResponse
     {
-        $header = $request->header('Authorization', '');
-        $token = str_starts_with($header, 'Bearer ') ? substr($header, 7) : '';
+        $token = $this->bearerToken($request);
+        $session = Cache::get('admin_session_'.$token, []);
 
         if ($token !== '') {
             Cache::forget('admin_session_'.$token);
         }
 
         DB::table('admision.bitacora_accion')->insert([
-            'usuario_id' => null,
+            'usuario_id' => $session['usuario_id'] ?? null,
             'accion' => 'LOGOUT',
             'tabla_afectada' => 'auth',
-            'registro_id' => null,
+            'registro_id' => $session['usuario'] ?? null,
             'descripcion' => 'Cierre de sesion',
             'fecha_hora' => now(),
             'ip' => $request->ip(),
@@ -86,12 +100,30 @@ class AuthController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    // MODULO AUTENTICACION ME - devuelve datos de sesion asociada al token Bearer.
     public function me(Request $request): JsonResponse
     {
-        $header = $request->header('Authorization', '');
-        $token = str_starts_with($header, 'Bearer ') ? substr($header, 7) : '';
+        return response()->json(
+            $request->attributes->get('auth_session', [])
+        );
+    }
 
-        return response()->json(Cache::get('admin_session_'.$token));
+    private function bearerToken(Request $request): string
+    {
+        $header = $request->header('Authorization', '');
+
+        return str_starts_with($header, 'Bearer ') ? substr($header, 7) : '';
+    }
+
+    private function auditLogin(Request $request, ?int $usuarioId, string $registro, string $descripcion): void
+    {
+        DB::table('admision.bitacora_accion')->insert([
+            'usuario_id' => $usuarioId,
+            'accion' => 'LOGIN',
+            'tabla_afectada' => 'auth',
+            'registro_id' => $registro,
+            'descripcion' => $descripcion,
+            'fecha_hora' => now(),
+            'ip' => $request->ip(),
+        ]);
     }
 }

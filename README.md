@@ -9,7 +9,7 @@ Esta carpeta contiene la API del sistema. El frontend consume esta API para logi
 - Composer
 - PostgreSQL
 - API REST JSON
-- Blade para generar la boleta PDF
+- Blade y DomPDF para generar boletas y reportes PDF
 
 ## Instalacion
 
@@ -53,6 +53,7 @@ http://127.0.0.1:8000/api
 - `config/`: configuracion Laravel y credenciales admin.
 - `routes/`: definicion de rutas.
 - `resources/views/pdf/`: plantilla de boleta PDF.
+- `resources/views/exports/`: plantillas de reportes compatibles con Excel.
 - `public/`: punto de entrada HTTP.
 - `storage/`: cache, logs y archivos generados localmente.
 
@@ -83,3 +84,16 @@ El backend esta preparado para Render usando `Dockerfile`. En Render se deben co
 - `DB_SCHEMA`
 
 No subas `.env` real al repositorio.
+
+## Seguridad por roles
+
+- `ADMINISTRADOR`: acceso completo.
+- `SECRETARIA`: postulantes en modo consulta, grupos y reportes.
+- `DOCENTE`: notas de los estudiantes de sus grupos y horarios propios.
+
+`AdminSessionMiddleware` valida la sesion y `RoleMiddleware` controla cada grupo
+de rutas. La configuracion visual equivalente esta en `config/roles.php`.
+
+Los documentos docentes se guardan en la columna `BYTEA` de
+`docente_requisito`; asi permanecen disponibles aunque el contenedor de Render
+se reinicie.

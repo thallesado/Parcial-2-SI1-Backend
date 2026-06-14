@@ -71,6 +71,20 @@ class TeacherAssignmentService
     // SERVICIO DOCENTES - valida que el docente pueda dictar la materia y no exceda cuatro grupos.
     public function validateTeacherCanBeAssigned(int $grupoId, int $materiaId, int $docenteId): ?string
     {
+        $requisitosObligatorios = DB::table('admision.tipo_requisito_docente')
+            ->where('obligatorio', true)
+            ->count();
+        $requisitosValidados = DB::table('admision.docente_requisito as dr')
+            ->join('admision.tipo_requisito_docente as tr', 'tr.tipo_requisito_id', '=', 'dr.tipo_requisito_id')
+            ->where('dr.docente_id', $docenteId)
+            ->where('tr.obligatorio', true)
+            ->where('dr.estado_validacion', 'VALIDADO')
+            ->count();
+
+        if ($requisitosValidados < $requisitosObligatorios) {
+            return 'El docente debe tener titulo profesional, maestria y diplomado validados antes de ser asignado.';
+        }
+
         $puedeDictar = DB::table('admision.docente_materia')
             ->where('docente_id', $docenteId)
             ->where('materia_id', $materiaId)

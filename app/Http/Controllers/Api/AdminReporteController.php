@@ -4,18 +4,70 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ResultadoAdmisionResource;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\HttpFoundation\Response;
 
 class AdminReporteController extends Controller
 {
-    // MODULO REPORTES - entrega datos de reportes, priorizando resultado_admision ya procesado.
+    // MODULO REPORTES - pagina el mismo query que usan las exportaciones.
     public function reportes(Request $request, string $tipo): JsonResponse
     {
         $perPage = min(max((int) $request->integer('per_page', 20), 10), 100);
-        $gestionId = $request->query('gestion_id');
+        $paginator = $this->buildQuery($tipo, $request->query('gestion_id'))->paginate($perPage);
 
+        if ($this->usaResultadoAdmision($tipo)) {
+            $paginator = $paginator->through(
+                fn ($row) => (new ResultadoAdmisionResource($row))->resolve()
+            );
+        }
+
+        return response()->json($paginator);
+    }
+
+    // EXPORTACION REPORTES - genera PDF o un archivo XLS compatible con Excel.
+    public function exportar(Request $request, string $tipo, string $formato): Response
+    {
+        abort_unless(in_array($formato, ['pdf', 'excel'], true), 404, 'Formato no soportado.');
+
+        $rows = $this->buildQuery($tipo, $request->query('gestion_id'))->get();
+        if ($this->usaResultadoAdmision($tipo)) {
+            $rows = $rows->map(fn ($row) => (new ResultadoAdmisionResource($row))->resolve());
+        } else {
+            $rows = $rows->map(fn ($row) => (array) $row);
+        }
+
+        $titulo = $this->titulos()[$tipo] ?? 'Reporte';
+        $gestion = $request->query('gestion_id') ?: 'Todas';
+        $filename = $tipo.'-'.now()->format('Ymd-His');
+
+        if ($formato === 'pdf') {
+            return Pdf::loadView('pdf.reporte', [
+                'titulo' => $titulo,
+                'gestion' => $gestion,
+                'rows' => $rows,
+                'columns' => $rows->first() ? array_keys($rows->first()) : [],
+            ])
+                ->setOption(['defaultFont' => 'Helvetica', 'isFontSubsettingEnabled' => true])
+                ->setPaper('a4', 'landscape')
+                ->download($filename.'.pdf');
+        }
+
+        $columns = $rows->first() ? array_keys($rows->first()) : [];
+        $html = view('exports.reporte-excel', compact('titulo', 'gestion', 'rows', 'columns'))->render();
+
+        return response($html, 200, [
+            'Content-Type' => 'application/vnd.ms-excel; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'.xls"',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
+    private function buildQuery(string $tipo, ?string $gestionId): Builder
+    {
         $resultadosBase = DB::table('admision.resultado_admision as ra')
             ->join('admision.postulante as p', 'p.postulante_id', '=', 'ra.postulante_id')
             ->leftJoin('admision.carrera as c', 'c.carrera_id', '=', 'ra.carrera_admitida_id')
@@ -33,7 +85,10 @@ class AdminReporteController extends Controller
                 'ra.estado_admision',
                 DB::raw('c.nombre as carrera_admitida'),
                 'ra.procesado_en'
-            );
+            )
+            ->orderByDesc('p.gestion_id')
+            ->orderBy('p.apellidos')
+            ->orderBy('p.nombres');
 
         $postulantesBase = DB::table('admision.postulante as p')
             ->join('admision.gestion_academica as ga', 'ga.gestion_id', '=', 'p.gestion_id')
@@ -102,28 +157,39 @@ class AdminReporteController extends Controller
             ->orderByDesc('total_aprobados')
             ->orderByDesc('total_estudiantes');
 
-        $estadisticasMateria = DB::table('admision.v_estadisticas_por_materia')
-            ->when($gestionId, fn ($query) => $query->where('gestion_id', $gestionId));
-
         $map = [
             'postulantes' => $postulantesBase,
             'aprobados' => (clone $resultadosBase)->where('ra.estado_academico', 'APROBADO'),
             'reprobados' => (clone $resultadosBase)->where('ra.estado_academico', 'REPROBADO'),
             'promedios' => $resultadosBase,
             'grupos' => $gruposBase,
-            'estadisticas-materia' => $estadisticasMateria,
+            'estadisticas-materia' => DB::table('admision.v_estadisticas_por_materia')
+                ->when($gestionId, fn ($query) => $query->where('gestion_id', $gestionId)),
             'docentes-grupos' => $docentesGruposBase,
             'grupos-aprobados' => $gruposAprobadosBase,
         ];
 
         abort_unless(isset($map[$tipo]), 404, 'Reporte no encontrado.');
 
-        $paginator = $map[$tipo]->paginate($perPage);
+        return $map[$tipo];
+    }
 
-        if (in_array($tipo, ['aprobados', 'reprobados', 'promedios'], true)) {
-            $paginator = $paginator->through(fn ($row) => (new ResultadoAdmisionResource($row))->resolve());
-        }
+    private function usaResultadoAdmision(string $tipo): bool
+    {
+        return in_array($tipo, ['aprobados', 'reprobados', 'promedios'], true);
+    }
 
-        return response()->json($paginator);
+    private function titulos(): array
+    {
+        return [
+            'postulantes' => 'Lista general de postulantes',
+            'aprobados' => 'Postulantes aprobados',
+            'reprobados' => 'Postulantes reprobados',
+            'promedios' => 'Promedios generales',
+            'grupos' => 'Cantidad de grupos habilitados',
+            'estadisticas-materia' => 'Estadisticas por materia',
+            'docentes-grupos' => 'Docentes por grupos',
+            'grupos-aprobados' => 'Grupos con mayor cantidad de aprobados',
+        ];
     }
 }

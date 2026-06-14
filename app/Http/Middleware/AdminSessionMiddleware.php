@@ -24,11 +24,13 @@ class AdminSessionMiddleware
         }
 
         // RENOVACION SESION - cada peticion valida extiende la vida del token en cache.
+        $session = Cache::get('admin_session_'.$token);
         Cache::put(
             'admin_session_'.$token,
-            Cache::get('admin_session_'.$token),
+            $session,
             now()->addMinutes(config('admin_credentials.session_minutes'))
         );
+        $request->attributes->set('auth_session', $session);
 
         $response = $next($request);
 
@@ -40,9 +42,8 @@ class AdminSessionMiddleware
             && $response->getStatusCode() < 400;
 
         if ($shouldAudit) {
-            $session = Cache::get('admin_session_'.$token);
             DB::table('admision.bitacora_accion')->insert([
-                'usuario_id' => null,
+                'usuario_id' => $session['usuario_id'] ?? null,
                 'accion' => $this->auditAction($request),
                 'tabla_afectada' => $request->path(),
                 'registro_id' => $request->route()?->parameter('postulante')?->postulante_id

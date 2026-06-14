@@ -8,4 +8,8 @@ Esta carpeta contiene recursos internos de Laravel que no son API Resources. En 
 
 ## Uso actual
 
-Se usa para generar la boleta PDF de inscripcion publica.
+Se usa para generar:
+
+- La boleta PDF de inscripcion publica.
+- Los reportes PDF administrativos.
+- Los archivos `.xls` compatibles con Excel.
